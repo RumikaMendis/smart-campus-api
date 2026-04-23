@@ -304,24 +304,21 @@ All errors return consistent JSON:
 
 ### Q1: What is the role of `@ApplicationPath` in JAX-RS, and how does it interact with Jersey's ResourceConfig?
 
-`@ApplicationPath` is a JAX-RS annotation that sets the base URI segment for the entire REST application. Placing `@ApplicationPath("/api/v1")` on the `AppConfig` class (which extends `ResourceConfig`) instructs the JAX-RS runtime that all resource paths are prefixed with `/api/v1`. For example, a resource annotated `@Path("rooms")` becomes accessible at `/api/v1/rooms`.
+`@ApplicationPath` is basically what sets the base URL for the whole REST application. I placed `@ApplicationPath("/api/v1")` on my `AppConfig` class so that all endpoints are prefixed with `/api/v1` — for example a resource with `@Path("rooms")` becomes `/api/v1/rooms`.
 
-`ResourceConfig` is Jersey's concrete implementation of the abstract `Application` class defined in the JAX-RS specification. By extending `ResourceConfig` rather than `Application`, we gain Jersey-specific utilities such as `packages()` (classpath scanning), `register()` (manual component registration), and the ability to add features like `JacksonFeature`.
+`ResourceConfig` is Jersey's own version of the JAX-RS `Application` class. I chose to extend `ResourceConfig` instead of `Application` because it gives you extra Jersey-specific features like `packages()` for auto-scanning your classes, and `register()` for adding things like `JacksonFeature` for JSON support.
 
-In this project, `AppConfig` combines both: it carries `@ApplicationPath("/api/v1")` for URI routing and extends `ResourceConfig` for Jersey-specific configuration. The Grizzly embedded server is started with the root URI `http://0.0.0.0:8080/`, and Jersey automatically applies the `/api/v1` prefix from the annotation.
+The way it works in this project — `AppConfig` carries the `@ApplicationPath` annotation and extends `ResourceConfig`. The Grizzly server is started with the full URI `http://0.0.0.0:8080/api/v1/` passed directly in `Main.java`, so Jersey picks up the path from there.
 
-**JAX-RS Lifecycle (Request-Scoped vs Singleton):**
-- By default, JAX-RS resource classes (annotated with `@Path`) are **request-scoped** — a new instance is created for every HTTP request. This is safe for our use case since data is stored in static `ConcurrentHashMap` rather than as instance fields.
-- The `DataStore` class uses `static` maps, effectively making it a **Singleton** — all request-scoped instances share the same data store. This is the correct pattern for in-memory storage without a database.
-- For thread safety, `ConcurrentHashMap` is used instead of `HashMap` — this allows concurrent reads from multiple request threads while serialising writes at the bucket level.
+One thing about the JAX-RS lifecycle is that resource classes (those with `@Path`) are request-scoped by default, meaning a new instance gets created for each request. That is fine here because the actual data lives in static `ConcurrentHashMap` fields in `DataStore`, not in the resource instance itself. So all requests share the same data even though each request gets a fresh resource object.
 
 ---
 
 ### Q2: What is HATEOAS and why is a Discovery Endpoint valuable?
 
-HATEOAS (Hypermedia As The Engine Of Application State) is the highest level of REST maturity (Richardson Maturity Model Level 3). In a HATEOAS-compliant API, responses include hyperlinks to related resources, allowing clients to navigate the API without hardcoded URLs.
+HATEOAS stands for Hypermedia As The Engine Of Application State. The basic idea is that API responses include links to related resources so clients know where to go next without needing to hardcode URLs.
 
-The discovery endpoint `GET /api/v1` returns a resource map:
+My discovery endpoint `GET /api/v1` returns something like:
 ```json
 {
   "resources": {
@@ -331,131 +328,86 @@ The discovery endpoint `GET /api/v1` returns a resource map:
 }
 ```
 
-**Benefits over static documentation:**
-1. **Self-documenting** — clients can discover available endpoints at runtime
-2. **Decoupling** — if a URL changes, clients that follow links automatically adapt
-3. **Onboarding** — new developers can explore the API from a single entry point
-4. **Versioning clarity** — the version (`"v1"`) is explicit in the response, not just the URL
-
-In contrast, static documentation (README, Swagger files) goes stale and requires manual updates. A live discovery endpoint always reflects the current API state.
+The main benefit I see is that it makes the API self-documenting — a new developer can hit the root URL and immediately see what resources are available. It also means if a URL ever changes, clients following the links would adapt rather than breaking. Static documentation like a README can go out of date but a live endpoint always reflects what is actually there.
 
 ---
 
 ### Q3: Explain the HTTP status codes used in this API and justify each choice.
 
-| Code | Name | Used When | Justification |
-|------|------|-----------|---------------|
-| 200 | OK | Successful GET | Standard success response for reads |
-| 201 | Created | Successful POST | Distinguishes creation from retrieval |
-| 204 | No Content | Successful DELETE | No body needed; action completed |
-| 404 | Not Found | Room/Sensor ID missing | The requested URI resource does not exist |
-| 409 | Conflict | Delete room with sensors | Request valid, but conflicts with server state |
-| 422 | Unprocessable Entity | Sensor with bad roomId | Body valid, but semantic reference invalid |
-| 403 | Forbidden | Post to MAINTENANCE sensor | Access denied by business policy |
-| 500 | Internal Server Error | Unexpected crash | Catch-all; hides internal details |
+| Code | Used When | Why |
+|------|-----------|-----|
+| 200 OK | Successful GET | Standard success for reads |
+| 201 Created | Successful POST | Shows something was actually created |
+| 204 No Content | Successful DELETE | No body needed |
+| 404 Not Found | Room/Sensor ID not in store | Requested resource does not exist |
+| 409 Conflict | Delete room that has sensors | Valid request but clashes with current data state |
+| 422 Unprocessable Entity | Sensor with non-existent roomId | JSON is fine but the content is semantically wrong |
+| 403 Forbidden | Reading to MAINTENANCE sensor | Business rule is blocking it |
+| 500 Server Error | Unexpected crash | Catch-all so no stack trace leaks |
 
-**Key distinctions:**
-- **404 vs 422:** 404 means the *endpoint URL* doesn't exist. 422 means the URL is valid, but the *body payload references a non-existent resource* (roomId). Using 422 communicates to the client that the problem is in the request body, not the URL.
-- **409 vs 400:** 400 means the request is malformed. 409 means it's a valid request that conflicts with current server state — the room exists, it's just not empty.
-- **403 vs 401:** 401 means unauthenticated. 403 means authenticated but denied. MAINTENANCE is a business rule restriction — the sensor exists but is restricted by policy.
+A few important distinctions worth mentioning — 404 vs 422 was something I had to think about. 404 should mean the URL itself does not exist, not that something inside the request body is wrong. So when someone creates a sensor with a bad roomId, the `/sensors` URL clearly does exist, it is the roomId in the body that is the problem, which is why 422 is more appropriate.
+
+Similarly 409 vs 400 — 400 would mean the request is malformed, but the delete request for a room is perfectly valid, it just conflicts with the fact that the room still has sensors. That is a 409.
 
 ---
 
 ### Q4: What is the purpose of ExceptionMappers in JAX-RS, and how does the Global mapper improve API security?
 
-`ExceptionMapper<T>` is a JAX-RS `@Provider` interface that maps a specific exception type to an HTTP `Response`. When a resource method throws `RoomNotFoundException`, JAX-RS catches it and delegates to `RoomNotFoundMapper`, which constructs a proper 404 JSON response.
+`ExceptionMapper<T>` is a JAX-RS interface marked with `@Provider` that lets you intercept a specific exception and turn it into a proper HTTP response. So when `RoomNotFoundException` gets thrown, instead of Jersey returning an ugly 500 HTML error, my `RoomNotFoundMapper` catches it and returns a clean 404 JSON.
 
-**Without ExceptionMappers:**
-- Uncaught exceptions would cause Jersey to return 500 with an HTML error page containing a full Java stack trace
-- The stack trace exposes: class names, library versions, file paths, line numbers
+Without these mappers, any uncaught exception would cause Jersey to dump a full Java stack trace in the response body. That is a security problem because:
+- It shows internal package names and class paths
+- It reveals which library versions are being used (e.g. jersey-server-2.41) which attackers can look up for known vulnerabilities
+- It shows method call chains that expose business logic
 
-**Security risks of stack traces (rubric 5.2):**
-1. **Path disclosure** — `at com.smartcampus.store.DataStore.getRooms(DataStore.java:34)` reveals the internal package structure
-2. **Version fingerprinting** — `jersey-server-2.41.jar` lets attackers look up known CVEs for that version
-3. **Logic disclosure** — method call chains reveal business logic and data flow, enabling targeted attacks
-4. **Library detection** — Jackson, Grizzly, HK2 versions become visible attack surface metadata
-
-The `GlobalExceptionMapper<Throwable>` acts as a safety net — any exception not caught by a specific mapper is caught here, and a generic `{"status": 500, "error": "unexpected server error"}` is returned. The actual exception is logged server-side only.
+My `GlobalExceptionMapper<Throwable>` covers anything not caught by the specific mappers. It returns a generic `{"status": 500, "error": "unexpected server error"}` and logs the real exception server-side only. So no internal details ever reach the client.
 
 ---
 
 ### Q5: How does ConcurrentHashMap differ from HashMap, and why is it important in a JAX-RS application?
 
-A `HashMap` is not thread-safe. In a JAX-RS server, each incoming HTTP request is handled on a separate thread from a thread pool. If two requests simultaneously attempt to write to a `HashMap` (e.g., two concurrent `POST /rooms`), the result is a `ConcurrentModificationException` or, worse, silent data corruption.
+A regular `HashMap` is not thread-safe. JAX-RS servers handle multiple requests at the same time using a thread pool, so if two requests both try to write to a `HashMap` at the same time you will get a `ConcurrentModificationException` or even silent data corruption.
 
-`ConcurrentHashMap` solves this by:
-- **Bucket-level locking** — only the affected segment is locked on write; other segments remain accessible for concurrent reads/writes
-- **Lock-free reads** — reads do not acquire any lock; they read the latest committed value
-- **Atomic operations** — `putIfAbsent`, `computeIfAbsent` etc. are atomic; no external synchronisation needed
+`ConcurrentHashMap` handles this by locking at the bucket/segment level rather than the whole map. This means different threads can read and write to different buckets simultaneously, which is much better for performance than putting a `synchronized` block around everything.
 
-In this project's `DataStore`, all three maps (`rooms`, `sensors`, `readings`) use `ConcurrentHashMap` to safely handle concurrent requests without `synchronized` blocks or `AtomicReference` wrappers.
-
-One remaining concurrency consideration: the UUID generation (`UUID.randomUUID()`) is thread-safe by Java specification, so no synchronisation is needed for ID assignment.
+In `DataStore`, all three maps (rooms, sensors, readings) use `ConcurrentHashMap`. I also noted that `UUID.randomUUID()` is thread-safe by the Java spec so there is no need for extra synchronisation around ID generation.
 
 ---
 
 ### Q6: What is the Sub-Resource Locator pattern in JAX-RS and why is it architecturally superior?
 
-A **sub-resource locator** is a resource method that, instead of producing a response directly, returns another resource class instance for further method dispatch. It does NOT have an HTTP method annotation (`@GET`, `@POST`).
+A sub-resource locator is a method that instead of directly producing a response, returns another resource class for JAX-RS to dispatch the request to. The important thing is it has no HTTP method annotation like `@GET` or `@POST`.
 
-In this project:
+In my project `SensorResource` has this method:
 ```java
-// In SensorResource.java
 @Path("{sensorId}/readings")
 public SensorReadingResource getReadingResource(@PathParam("sensorId") String sensorId) {
-    Sensor sensor = DataStore.getSensors().get(sensorId);
-    if (sensor == null) throw new SensorNotFoundException(...);
-    return new SensorReadingResource(sensor);
+    return new SensorReadingResource(sensorId);
 }
 ```
 
-When a request arrives for `/sensors/abc123/readings`, JAX-RS:
-1. Matches `/sensors` → `SensorResource`
-2. Matches `/{sensorId}/readings` → calls `getReadingResource("abc123")`
-3. Receives `SensorReadingResource` instance
-4. Dispatches `GET` or `POST` to the matching method in that class
+So a request to `/sensors/abc123/readings` hits `SensorResource` first, which calls this locator method and gets back a `SensorReadingResource` instance. Jersey then dispatches the actual `GET` or `POST` to that class.
 
-**Architectural benefits:**
-1. **Single Responsibility** — `SensorReadingResource` handles only reading logic; `SensorResource` handles only sensor logic
-2. **Delegation** — the locator acts as a factory, creating a scoped resource instance
-3. **Testability** — `SensorReadingResource` can be unit tested in isolation by injecting a mock `Sensor`
-4. **Scalability** — in large APIs, sub-resource locators allow splitting feature teams across separate classes without URL conflicts
+The main advantage is that it keeps things separated — sensor logic in one class, readings logic in another. If I had put everything in one resource class it would get very messy. I also do the sensor existence check in the locator method so by the time the actual handler runs the sensor is already validated.
 
 ---
 
 ### Q7: Explain QueryParam vs PathParam. Why is `?type=CO2` better than `/sensors/CO2`?
 
-| Feature | `@PathParam` | `@QueryParam` |
-|---------|-------------|---------------|
-| Position | Part of the URI path | After `?` in the URI |
-| Example | `/sensors/CO2` | `/sensors?type=CO2` |
-| Resource identity | Changes the resource | Does NOT change the resource |
-| Optional? | No (required) | Yes (optional) |
-| REST semantics | Identifies a resource | Filters/modifies a representation |
+`@PathParam` is for values that are part of the URL path and identify a specific resource — like `/rooms/{id}` where id is the room being identified. `@QueryParam` is for optional filters that come after the `?` in the URL.
 
-**Why QueryParam is correct for sensor type filtering:**
+For sensor type filtering I went with `@QueryParam("type")` so the URL is `GET /sensors?type=CO2`. The other option would have been a path param like `GET /sensors/CO2`.
 
-1. **Resource identity:** `/sensors` is the collection of ALL sensors. Using `/sensors/CO2` would imply that `CO2` is a sub-resource of `sensors` — semantically wrong. The URL structure should reflect resource hierarchy, not filtering criteria.
+The reason query param makes more sense here is that `/sensors` already represents the whole sensors collection — that is the resource. The type is just a filter on that collection, not a sub-resource. If I used `/sensors/CO2` it would suggest CO2 is a child resource of sensors which is semantically wrong.
 
-2. **Optionality:** `@QueryParam` is naturally optional — `GET /sensors` (no filter) returns all sensors; `GET /sensors?type=CO2` returns a subset. `PathParam` cannot be optional without creating a separate `@Path` method.
-
-3. **REST Uniform Interface:** The Uniform Interface constraint requires that resources are identified by URI. `/sensors` identifies the sensors collection. The query string modifies the *representation* of that collection, not the collection itself.
-
-4. **Caching:** In HTTP, query string parameters change the cache key, which is correct — a cached response for `/sensors?type=CO2` should be separate from `/sensors?type=Temperature`. PathParams use the same caching segment structure, which could cause collisions if the path is misinterpreted.
+Also query params are optional by default which is exactly what I needed — no type param means return all sensors, with type param means return the filtered set.
 
 ---
 
 ### Q8: What happens when a client sends the wrong Content-Type to a JAX-RS endpoint?
 
-If a client sends a request with `Content-Type: text/plain` to an endpoint annotated with `@Consumes(MediaType.APPLICATION_JSON)`, Jersey automatically returns:
+If a client sends `Content-Type: text/plain` to an endpoint that has `@Consumes(MediaType.APPLICATION_JSON)`, Jersey rejects it automatically with `415 Unsupported Media Type` before the resource method even gets called. No custom code needed.
 
-```
-HTTP/1.1 415 Unsupported Media Type
-```
-
-This is handled entirely by the JAX-RS runtime — no custom code is needed. Jersey inspects the `Content-Type` header, compares it to the `@Consumes` annotation, and rejects the request before the resource method is ever invoked.
-
-**Practical demonstration:**
 ```bash
 curl -X POST http://localhost:8080/api/v1/rooms \
   -H "Content-Type: text/plain" \
@@ -463,59 +415,35 @@ curl -X POST http://localhost:8080/api/v1/rooms \
 # → 415 Unsupported Media Type
 ```
 
-**Why this matters:**
-- Prevents Jackson from attempting to parse non-JSON content (which would throw a `JsonProcessingException`)
-- Provides a clear, standards-compliant error message to the client
-- No performance cost from attempting to deserialise invalid content
+Similarly if the client sends `Accept: text/html` but the endpoint only produces JSON, Jersey returns `406 Not Acceptable`.
 
-If the `Accept` header is wrong (client asks for `Accept: text/html` but the resource only `@Produces(APPLICATION_JSON)`), Jersey returns `406 Not Acceptable`.
+This is actually one of the things I found useful about JAX-RS — content negotiation is all handled by the framework, you do not have to write any code for it yourself.
 
 ---
 
 ### Q9: Why is `422 Unprocessable Entity` the correct response when a sensor references a non-existent room, rather than `404 Not Found`?
 
-This is a critical REST semantics distinction:
+The distinction comes down to what part of the request is wrong.
 
-**HTTP 404 Not Found** means: "The URI you requested (`/api/v1/sensors`) does not exist on this server." The URI itself is the problem.
+404 means the URL itself does not exist on the server. But when a client POSTs to `/api/v1/sensors` with a non-existent roomId, the `/api/v1/sensors` URL clearly exists — it works fine for valid requests. So 404 would be the wrong signal, the client might think they have the wrong URL and start debugging in the wrong place.
 
-**HTTP 422 Unprocessable Entity** means: "The URI you requested exists and I understood your JSON body, but I cannot process this request because the body contains a semantic error." The payload is the problem.
+422 means I understood your request and the JSON is valid, but the content cannot be processed because of a semantic problem in the body. In this case the roomId is referencing something that does not exist in the system, which is a data validation issue not a URL issue.
 
-In our case:
-- Client `POST`s to `/api/v1/sensors` — this URI **exists** (200s on GET)
-- The JSON body is **syntactically valid** — Jackson parses it without error
-- But `roomId: "does-not-exist"` is a **semantic error** — the referenced entity doesn't exist
-
-Returning 404 would be misleading — the client might think the `/sensors` endpoint itself doesn't exist and stop trying. Returning 422 clearly communicates: "your endpoint call is correct, but fix the `roomId` in your request body."
-
-This distinction is defined in RFC 4918 (WebDAV) and adopted by REST best practices: 422 applies when the request is well-formed but contains unprocessable instructions.
+So 422 tells the client: your endpoint is right, go fix the roomId in your request body.
 
 ---
 
 ### Q10: What is idempotency in REST, and which HTTP methods in this API are idempotent?
 
-An HTTP method is **idempotent** if calling it multiple times with the same input produces the same server state as calling it once.
+Idempotency means calling the same request multiple times with the same input gives the same result as calling it once — the server state does not keep changing.
 
-| Method | Idempotent? | Reason |
-|--------|-------------|--------|
-| GET | ✅ Yes | Read-only; no state change |
-| DELETE | ✅ Yes* | Deletes resource; subsequent calls return 404 (state unchanged after first) |
-| POST | ❌ No | Each call creates a new resource with a new UUID |
-| PUT | ✅ Yes | Full replacement; same input produces same state |
+- `GET` is idempotent — it only reads, nothing changes
+- `DELETE` is effectively idempotent — first call deletes the room and returns 204, second call returns 404 because it is already gone. The server state is the same (room absent) either way
+- `POST` is not idempotent — every `POST /rooms` creates a brand new room with a new UUID, so calling it twice gives you two rooms
 
-**In this project:**
-
-- `GET /rooms` — idempotent ✅ (always reads current state)
-- `DELETE /rooms/{id}` — effectively idempotent† ✅  
-  - First call: deletes room → 204
-  - Second call: room gone → 404
-  - Server state is the same (room absent) after both calls; client gets different response codes but this is acceptable per RFC 7231
-- `POST /rooms` — NOT idempotent ❌  
-  - Each call creates a new room with a new UUID and increments the collection
-
-**Why idempotency matters:**
-In unreliable networks, clients may retry requests when they don't receive a response. If a `DELETE` is retried and the resource is already gone (404), the client can safely treat this as success — the desired state (resource deleted) has been achieved. If `POST` were idempotent, retrying it would not create duplicates — but standard `POST` is not, so clients must be careful with POST retries.
+This is mainly important in unreliable networks where a client might retry a request if it did not get a response. Retrying a DELETE is safe. Retrying a POST by accident would create duplicate data.
 
 ---
 
-*Smart Campus System REST API — 5COSC022W Coursework*  
+*Smart Campus System REST API — 5COSC022W Coursework*
 *Stack: Java 11 | JAX-RS (Jersey 2.41) | Grizzly2 HTTP Server | Jackson JSON | Apache Maven*
