@@ -3,7 +3,7 @@
 **Name:** Degiri Rumika Damsath Mendis Senevirathne  
 **Student ID:** 20233014 / w2120605  
 **Module:** 5COSC022W - Client-Server Architectures Coursework  
-**GitHub Repo:** [https://github.com/RumikaMendis/smart-campus-api](https://github.com/RumikaMendis/smart-campus-api)  
+**GitHub Repository:** [https://github.com/RumikaMendis/smart-campus-api](https://github.com/RumikaMendis/smart-campus-api)  
 **Technology:** Java 11 | JAX-RS (Jersey 2.41) | Grizzly2 | Jackson | Maven
 
 ---
