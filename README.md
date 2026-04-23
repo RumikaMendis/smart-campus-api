@@ -1,6 +1,8 @@
-# Smart Campus System — REST API
+# Smart Campus Sensor & Room Management API
 
-**Module:** 5COSC022W — Component and Service-Based Architectures  
+**Name:** Degiri Rumika Damsath Mendis Senevirathne  
+**Student ID:** 20233014 / w2120605  
+**Module:** 5COSC022W - Client-Server Architectures Coursework  
 **Technology:** Java 11 | JAX-RS (Jersey 2.41) | Grizzly2 | Jackson | Maven
 
 ---
