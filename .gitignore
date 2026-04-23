@@ -1,0 +1,17 @@
+# Maven build output - do not push to GitHub
+target/
+
+# NetBeans project files
+nbproject/private/
+build/
+nbbuild/
+dist/
+nbdist/
+.nb-gradle/
+
+# Mac OS files
+.DS_Store
+
+# IDE files
+*.iml
+.idea/
